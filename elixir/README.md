@@ -13,35 +13,33 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls a GitLab project issue board for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During GitLab app-server sessions, Symphony also serves a client-side `gitlab_rest` tool so that
+repo skills can make REST calls inside the configured GitLab project.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a terminal state (`closed` for GitLab), Symphony stops the active agent
+for that issue and cleans up matching workspaces.
 
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+2. Get a GitLab personal access token with project issue permissions and set it as the
+   `GITLAB_TOKEN` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+4. Optionally copy the `commit`, `push`, `pull`, and `land` skills to your repo.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+   - Set `tracker.project_id` to the GitLab numeric project ID or URL path, such as
+     `group/project`.
+   - Set `tracker.board_id` to the GitLab project issue board ID.
+   - The default workflow expects label-backed board lists such as "Todo", "In Progress",
+     "Rework", "Human Review", and "Merging".
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -88,8 +86,12 @@ Minimal example:
 ```md
 ---
 tracker:
-  kind: linear
-  project_slug: "..."
+  kind: gitlab_board
+  api_key: $GITLAB_TOKEN
+  project_id: "group/project"
+  board_id: "1"
+  active_states: ["Todo", "In Progress"]
+  terminal_states: ["closed"]
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -102,7 +104,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on a GitLab issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -127,7 +129,10 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- For `tracker.kind: gitlab_board`, `tracker.api_key` reads from `GITLAB_TOKEN` when unset or when
+  value is `$GITLAB_TOKEN`.
+- For `tracker.kind: linear`, `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when
+  value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -135,7 +140,7 @@ Notes:
 
 ```yaml
 tracker:
-  api_key: $LINEAR_API_KEY
+  api_key: $GITLAB_TOKEN
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:

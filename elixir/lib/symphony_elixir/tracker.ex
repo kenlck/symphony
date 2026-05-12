@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Tracker do
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do
+      "gitlab_board" -> SymphonyElixir.GitLab.Adapter
       "memory" -> SymphonyElixir.Tracker.Memory
       _ -> SymphonyElixir.Linear.Adapter
     end

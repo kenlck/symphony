@@ -22,6 +22,33 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert description =~ "Linear"
   end
 
+  test "tool_specs advertises gitlab_rest for GitLab board workflows" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12"
+    )
+
+    assert [
+             %{
+               "description" => description,
+               "inputSchema" => %{
+                 "properties" => %{
+                   "method" => _,
+                   "path" => _,
+                   "query" => _,
+                   "body" => _
+                 },
+                 "required" => ["method", "path"],
+                 "type" => "object"
+               },
+               "name" => "gitlab_rest"
+             }
+           ] = DynamicTool.tool_specs()
+
+    assert description =~ "GitLab"
+  end
+
   test "unsupported tools return a failure payload with the supported tool list" do
     response = DynamicTool.execute("not_a_real_tool", %{})
 
@@ -40,6 +67,120 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "gitlab_rest returns successful REST responses as tool text" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12"
+    )
+
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{
+          "method" => "GET",
+          "path" => "/projects/group%2Fproject/issues/42",
+          "query" => %{"with_labels_details" => "true"}
+        },
+        gitlab_client: fn method, path, query, body, opts ->
+          send(test_pid, {:gitlab_client_called, method, path, query, body, opts})
+          {:ok, %{"iid" => 42, "title" => "Ship GitLab"}}
+        end
+      )
+
+    assert_received {:gitlab_client_called, "GET", "/projects/group%2Fproject/issues/42",
+                     %{"with_labels_details" => "true"}, nil, []}
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"iid" => 42, "title" => "Ship GitLab"}
+  end
+
+  test "gitlab_rest validates arguments before calling GitLab" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12"
+    )
+
+    response =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{"path" => "/projects/group%2Fproject/issues/42"},
+        gitlab_client: fn _method, _path, _query, _body, _opts ->
+          flunk("gitlab client should not be called when arguments are invalid")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "message" => "`gitlab_rest` requires a non-empty `method` string."
+             }
+           }
+
+    invalid_query =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{"method" => "GET", "path" => "/projects/group%2Fproject/issues/42", "query" => ["bad"]},
+        gitlab_client: fn _method, _path, _query, _body, _opts ->
+          flunk("gitlab client should not be called when query is invalid")
+        end
+      )
+
+    assert Jason.decode!(invalid_query["output"]) == %{
+             "error" => %{"message" => "`gitlab_rest.query` must be a JSON object when provided."}
+           }
+  end
+
+  test "gitlab_rest formats transport, auth, and path failures" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12"
+    )
+
+    missing_token =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{"method" => "GET", "path" => "/projects/group%2Fproject/issues/42"},
+        gitlab_client: fn _method, _path, _query, _body, _opts -> {:error, :missing_gitlab_api_token} end
+      )
+
+    assert Jason.decode!(missing_token["output"]) == %{
+             "error" => %{
+               "message" => "Symphony is missing GitLab auth. Set `tracker.api_key` in `WORKFLOW.md` or export `GITLAB_TOKEN`."
+             }
+           }
+
+    status_error =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{"method" => "GET", "path" => "/projects/group%2Fproject/issues/42"},
+        gitlab_client: fn _method, _path, _query, _body, _opts -> {:error, {:gitlab_api_status, 404}} end
+      )
+
+    assert Jason.decode!(status_error["output"]) == %{
+             "error" => %{
+               "message" => "GitLab API request failed with HTTP 404.",
+               "status" => 404
+             }
+           }
+
+    path_error =
+      DynamicTool.execute(
+        "gitlab_rest",
+        %{"method" => "GET", "path" => "/projects/other/issues/1"},
+        gitlab_client: fn _method, _path, _query, _body, _opts -> {:error, :gitlab_path_outside_project} end
+      )
+
+    assert Jason.decode!(path_error["output"]) == %{
+             "error" => %{"message" => "`gitlab_rest.path` must stay inside the configured GitLab project."}
+           }
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

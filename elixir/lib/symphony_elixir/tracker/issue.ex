@@ -1,6 +1,6 @@
-defmodule SymphonyElixir.Linear.Issue do
+defmodule SymphonyElixir.Tracker.Issue do
   @moduledoc """
-  Backwards-compatible Linear issue struct.
+  Normalized issue representation used by tracker adapters and orchestration.
   """
 
   defstruct [

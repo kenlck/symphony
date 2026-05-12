@@ -46,9 +46,11 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:project_id, :string)
+      field(:board_id, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -59,7 +61,17 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :project_id,
+          :board_id,
+          :assignee,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -368,8 +380,12 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | endpoint: default_tracker_endpoint(settings.tracker.kind, settings.tracker.endpoint),
+        api_key: resolve_secret_setting(settings.tracker.api_key, tracker_token_fallback(settings.tracker.kind)),
+        assignee: resolve_secret_setting(settings.tracker.assignee, tracker_assignee_fallback(settings.tracker.kind)),
+        project_id: normalize_secret_value(settings.tracker.project_id),
+        board_id: normalize_secret_value(settings.tracker.board_id),
+        terminal_states: default_tracker_terminal_states(settings.tracker.kind, settings.tracker.terminal_states)
     }
 
     workspace = %{
@@ -400,6 +416,21 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
+
+  defp default_tracker_endpoint("gitlab_board", nil), do: "https://gitlab.com/api/v4"
+  defp default_tracker_endpoint("gitlab_board", ""), do: "https://gitlab.com/api/v4"
+  defp default_tracker_endpoint(_kind, nil), do: "https://api.linear.app/graphql"
+  defp default_tracker_endpoint(_kind, ""), do: "https://api.linear.app/graphql"
+  defp default_tracker_endpoint(_kind, endpoint), do: endpoint
+
+  defp default_tracker_terminal_states("gitlab_board", ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]), do: ["closed"]
+  defp default_tracker_terminal_states(_kind, terminal_states), do: terminal_states
+
+  defp tracker_token_fallback("gitlab_board"), do: System.get_env("GITLAB_TOKEN")
+  defp tracker_token_fallback(_kind), do: System.get_env("LINEAR_API_KEY")
+
+  defp tracker_assignee_fallback("gitlab_board"), do: System.get_env("GITLAB_ASSIGNEE")
+  defp tracker_assignee_fallback(_kind), do: System.get_env("LINEAR_ASSIGNEE")
 
   defp drop_nil_values(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->

@@ -2,6 +2,10 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
   test "config defaults and validation checks" do
+    previous_gitlab_token = System.get_env("GITLAB_TOKEN")
+    on_exit(fn -> restore_env("GITLAB_TOKEN", previous_gitlab_token) end)
+    System.delete_env("GITLAB_TOKEN")
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       tracker_project_slug: nil,
@@ -86,6 +90,33 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_api_token: nil,
+      tracker_project_id: nil,
+      tracker_board_id: nil
+    )
+
+    assert {:error, :missing_gitlab_api_token} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_api_token: "token",
+      tracker_project_id: nil,
+      tracker_board_id: "12"
+    )
+
+    assert {:error, :missing_gitlab_project_id} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_api_token: "token",
+      tracker_project_id: "group/project",
+      tracker_board_id: nil
+    )
+
+    assert {:error, :missing_gitlab_board_id} = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -98,8 +129,9 @@ defmodule SymphonyElixir.CoreTest do
 
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert Map.get(tracker, "kind") == "gitlab_board"
+    assert is_binary(Map.get(tracker, "project_id"))
+    assert is_binary(Map.get(tracker, "board_id"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
@@ -147,6 +179,30 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "gitlab token resolves from GITLAB_TOKEN env var" do
+    previous_gitlab_token = System.get_env("GITLAB_TOKEN")
+    env_token = "test-gitlab-token"
+
+    on_exit(fn -> restore_env("GITLAB_TOKEN", previous_gitlab_token) end)
+    System.put_env("GITLAB_TOKEN", env_token)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_id: "group/project",
+      tracker_board_id: "12",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.endpoint == "https://gitlab.com/api/v4"
+    assert Config.settings!().tracker.api_key == env_token
+    assert Config.settings!().tracker.project_id == "group/project"
+    assert Config.settings!().tracker.board_id == "12"
+    assert Config.settings!().tracker.terminal_states == ["closed"]
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -883,7 +939,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on a tracker issue."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
@@ -959,7 +1015,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
+    assert prompt =~ "You are working on a GitLab issue `MT-616`"
     assert prompt =~ "Issue context:"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"

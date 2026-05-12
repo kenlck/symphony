@@ -394,12 +394,11 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_project_link_lines do
     project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
-
-        _ ->
-          colorize("n/a", @ansi_gray)
+      Config.settings!().tracker
+      |> tracker_project_url()
+      |> case do
+        url when is_binary(url) and url != "" -> colorize(url, @ansi_cyan)
+        _ -> colorize("n/a", @ansi_gray)
       end
 
     project_line = colorize("│ Project: ", @ansi_bold) <> project_part
@@ -427,7 +426,26 @@ defmodule SymphonyElixir.StatusDashboard do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
 
-  defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
+  defp tracker_project_url(%{kind: "gitlab_board", endpoint: endpoint, project_id: project_id, board_id: board_id})
+       when is_binary(project_id) and project_id != "" and is_binary(board_id) and board_id != "" do
+    base_url =
+      endpoint
+      |> to_string()
+      |> String.trim_trailing("/")
+      |> String.replace_suffix("/api/v4", "")
+
+    if String.contains?(project_id, "/") do
+      "#{base_url}/#{project_id}/-/boards/#{board_id}"
+    else
+      "#{base_url}/api/v4/projects/#{URI.encode_www_form(project_id)}/boards/#{board_id}"
+    end
+  end
+
+  defp tracker_project_url(%{project_slug: project_slug}) when is_binary(project_slug) and project_slug != "" do
+    "https://linear.app/project/#{project_slug}/issues"
+  end
+
+  defp tracker_project_url(_tracker), do: nil
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())

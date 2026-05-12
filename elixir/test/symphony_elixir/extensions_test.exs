@@ -4,7 +4,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
+  alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -35,6 +36,40 @@ defmodule SymphonyElixir.ExtensionsTest do
 
         _ ->
           Process.get({__MODULE__, :graphql_result})
+      end
+    end
+  end
+
+  defmodule FakeGitLabClient do
+    def fetch_candidate_issues do
+      send(self(), :gitlab_fetch_candidate_issues_called)
+      {:ok, [:gitlab_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:gitlab_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:gitlab_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def rest(method, path, query, body) do
+      rest(method, path, query, body, [])
+    end
+
+    def rest(method, path, query, body, _opts) do
+      send(self(), {:gitlab_rest_called, method, path, query, body})
+
+      case Process.get({__MODULE__, :rest_results}) do
+        [result | rest] ->
+          Process.put({__MODULE__, :rest_results}, rest)
+          result
+
+        _ ->
+          Process.get({__MODULE__, :rest_result}, {:ok, %{}})
       end
     end
   end
@@ -202,19 +237,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
-    assert SymphonyElixir.Tracker.adapter() == Adapter
+    assert SymphonyElixir.Tracker.adapter() == LinearAdapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_endpoint: "https://gitlab.example/api/v4",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12"
+    )
+
+    Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
+    assert Config.settings!().tracker.kind == "gitlab_board"
+    assert SymphonyElixir.Tracker.adapter() == GitLabAdapter
+    assert {:ok, [:gitlab_candidate]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert_receive :gitlab_fetch_candidate_issues_called
+    assert {:ok, ["Todo"]} = SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+    assert_receive {:gitlab_fetch_issues_by_states_called, ["Todo"]}
+    assert {:ok, ["1"]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["1"])
+    assert_receive {:gitlab_fetch_issue_states_by_ids_called, ["1"]}
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
-    assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
+    assert {:ok, [:candidate]} = LinearAdapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
 
-    assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
+    assert {:ok, ["Todo"]} = LinearAdapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
 
-    assert {:ok, ["issue-1"]} = Adapter.fetch_issue_states_by_ids(["issue-1"])
+    assert {:ok, ["issue-1"]} = LinearAdapter.fetch_issue_states_by_ids(["issue-1"])
     assert_receive {:fetch_issue_states_by_ids_called, ["issue-1"]}
 
     Process.put(
@@ -222,7 +274,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
     )
 
-    assert :ok = Adapter.create_comment("issue-1", "hello")
+    assert :ok = LinearAdapter.create_comment("issue-1", "hello")
     assert_receive {:graphql_called, create_comment_query, %{body: "hello", issueId: "issue-1"}}
     assert create_comment_query =~ "commentCreate"
 
@@ -232,17 +284,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :comment_create_failed} =
-             Adapter.create_comment("issue-1", "broken")
+             LinearAdapter.create_comment("issue-1", "broken")
 
     Process.put({FakeLinearClient, :graphql_result}, {:error, :boom})
 
-    assert {:error, :boom} = Adapter.create_comment("issue-1", "boom")
+    assert {:error, :boom} = LinearAdapter.create_comment("issue-1", "boom")
 
     Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
-    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "weird")
+    assert {:error, :comment_create_failed} = LinearAdapter.create_comment("issue-1", "weird")
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
-    assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
+    assert {:error, :comment_create_failed} = LinearAdapter.create_comment("issue-1", "odd")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -257,7 +309,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert :ok = Adapter.update_issue_state("issue-1", "Done")
+    assert :ok = LinearAdapter.update_issue_state("issue-1", "Done")
     assert_receive {:graphql_called, state_lookup_query, %{issueId: "issue-1", stateName: "Done"}}
     assert state_lookup_query =~ "states"
 
@@ -279,14 +331,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} =
-             Adapter.update_issue_state("issue-1", "Broken")
+             LinearAdapter.update_issue_state("issue-1", "Broken")
 
     Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
 
-    assert {:error, :boom} = Adapter.update_issue_state("issue-1", "Boom")
+    assert {:error, :boom} = LinearAdapter.update_issue_state("issue-1", "Boom")
 
     Process.put({FakeLinearClient, :graphql_results}, [{:ok, %{"data" => %{}}}])
-    assert {:error, :state_not_found} = Adapter.update_issue_state("issue-1", "Missing")
+    assert {:error, :state_not_found} = LinearAdapter.update_issue_state("issue-1", "Missing")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -301,7 +353,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Weird")
+    assert {:error, :issue_update_failed} = LinearAdapter.update_issue_state("issue-1", "Weird")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -316,7 +368,39 @@ defmodule SymphonyElixir.ExtensionsTest do
       ]
     )
 
-    assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+    assert {:error, :issue_update_failed} = LinearAdapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "gitlab adapter writes comments and moves board labels" do
+    Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab_board",
+      tracker_endpoint: "https://gitlab.example/api/v4",
+      tracker_project_id: "group/project",
+      tracker_board_id: "12",
+      tracker_active_states: ["Todo", "In Progress", "Rework"],
+      tracker_terminal_states: ["closed"]
+    )
+
+    Process.put({FakeGitLabClient, :rest_result}, {:ok, %{"id" => 9}})
+    assert :ok = GitLabAdapter.create_comment("#42", "hello")
+
+    assert_receive {:gitlab_rest_called, "POST", "/projects/group%2Fproject/issues/42/notes", %{},
+                    %{"body" => "hello"}}
+
+    assert :ok = GitLabAdapter.update_issue_state("42", "In Progress")
+
+    assert_receive {:gitlab_rest_called, "PUT", "/projects/group%2Fproject/issues/42", %{},
+                    %{"add_labels" => "In Progress", "remove_labels" => "Todo,Rework"}}
+
+    assert :ok = GitLabAdapter.update_issue_state("42", "closed")
+
+    assert_receive {:gitlab_rest_called, "PUT", "/projects/group%2Fproject/issues/42", %{},
+                    %{"state_event" => "close"}}
+
+    Process.put({FakeGitLabClient, :rest_result}, {:error, :boom})
+    assert {:error, :boom} = GitLabAdapter.create_comment("42", "boom")
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
